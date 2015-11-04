@@ -2,7 +2,7 @@
 default: upload
 	
 main: main.c
-	avr-gcc -Wall -Os -DF_CPU=8000000 -mmcu=attiny85 $^ -o build/$@
+	avr-gcc -Wall -O2 -DF_CPU=8000000 -mmcu=attiny85 $^ -o build/$@
 
 upload: main
 	avr-objcopy -O ihex -R .eeprom build/$^ build/$^.hex
