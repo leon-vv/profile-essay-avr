@@ -1,16 +1,123 @@
 #include <avr/io.h>
-#include <util/delay.h>
+#include <avr/interrupt.h>
+#include <avr/sleep.h>
+#include <avr/delay.h>
+#include <util/delay_basic.h>
 #include <stdint.h>
+
+#define SERVO_SHORT_PULSE 500
+#define SERVO_LONG_PULSE 2400
+#define SERVO_SHORT_CYCLES (8 * SERVO_SHORT_PULSE)
+#define SERVO_LONG_CYCLES (8 * SERVO_LONG_PULSE)
+#define SERVO_PIN PB2
+
+#define ESC_SHORT_PULSE 1000
+#define ESC_LONG_PULSE 2000
+#define ESC_SHORT_CYCLES (8 * ESC_SHORT_PULSE)
+#define ESC_LONG_CYCLES (8 * ESC_LONG_PULSE)
+#define ESC_PIN PB1
 
 // An 8-bit value representing the state of the servo.
 // If this value is 0 the servo shaft will be turned
 // all the way to one side, if this value is 255
 // the shaft will be turned the other way around.
-volatile uint8_t servo = 125;
+volatile uint8_t servo = 200;
+volatile uint8_t esc = 100;
+
+void inline
+set_on_for(unsigned iterations, uint8_t pin)
+{
+    PORTB |= _BV(pin);
+    _delay_loop_2(iterations);
+    PORTB &= ~_BV(pin);
+}
+
+void inline
+pulse_for(unsigned pulse_duration, int duration, uint8_t pin)
+{
+    while(duration > 0) {
+        _delay_ms(18);
+        duration -= 18;
+
+        set_on_for(pulse_duration * 2, pin);
+    }
+}
+
+void
+calibrate_esc() {
+    pulse_for(1000, 5000, ESC_PIN);
+    pulse_for(1500, 5000, ESC_PIN);
+    pulse_for(2000, 5000, ESC_PIN);
+}
+
+void inline
+sort_delay_array(uint32_t *array) {
+    // Sort the array by the amount of iterations to delay (ascending).
+
+    uint16_t first = array[0];
+    uint16_t second = array[1];
+
+    if(first > second) {
+        uint32_t tmp = array[0];
+        array[0] = array[1];
+        array[1] = tmp;
+    }
+}
+
+ISR(TIM0_COMPA_vect) {
+    // This interrupt will be triggered slightly more often than
+    // every 20 ms. During this interrupt we send a control pulse
+    // to the servo's and the ESC (which controls the motor).
+
+    // A control pulse takes between 'SERVO_SHORT_PULSE' microseconds (off)
+    // and 'SERVO_LONG_PULSE' microseconds (on). Since our chip runs at
+    // 8 MHz we should wait between:
+    // SERVO_LONG_CYCLES = (SERVO_LONG_PULSE / 10^6) * 8 * 10^6 = 8 * SERVO_LONG_PULSE and
+    // SERVO_SHORT_CYCLES = (SERVO_SHORT_PULSE / 10^6) * 8 * 10^6 = 8 * SERVO_SHORT_PULSE cpu cycles.
+    
+    // So we first translate 'servo', which is a value between 0 and 255
+    // to the necessary cycles.
+    uint16_t servo_cycles_to_wait = SERVO_SHORT_CYCLES + (servo / 255.0) * (SERVO_LONG_CYCLES - SERVO_SHORT_CYCLES);
+    uint16_t esc_cycles_to_wait = ESC_SHORT_CYCLES + (esc / 255.0) * (ESC_LONG_CYCLES - ESC_SHORT_CYCLES);
+
+    // '_delay_loop_2' delayes the program by a number of iterations.
+    // Every iteration takes four cycles, as documented on the following
+    // page of the AVR Libc reference:nongnu.org/avr-libc/user-manual/group__util__delay__basic.html
+    uint16_t servo_iter_to_wait = servo_cycles_to_wait / 4;
+    uint16_t esc_iter_to_wait = esc_cycles_to_wait / 4;
+
+    uint32_t delays[2] = {
+        ((uint32_t)SERVO_PIN << 16) + servo_iter_to_wait,
+        ((uint32_t)ESC_PIN << 16) + esc_iter_to_wait
+    };
+
+    sort_delay_array(delays);
+
+    // Start sending the pulse.
+    PORTB |= _BV(SERVO_PIN) | _BV(ESC_PIN);
+
+    uint16_t delayed = 0;
+    for(int i = 0; i < 2; i++) {
+        uint32_t current = delays[i];
+        
+        unsigned delay = ((uint16_t)current) - delayed;
+
+        set_on_for(delay, current >> 16); 
+
+        delayed += delay;
+    }
+}
 
 int main() {
-    // Enable output on the PB2 and PB1 pins.
-    DDRB |= _BV(PB2) | _BV(PB1);
+    // Set the pins as output.
+    DDRB |= _BV(SERVO_PIN) | _BV(ESC_PIN);
+
+    calibrate_esc(); 
+    
+    // Enable interrupts.
+    sei();
+    // More specifically, enable 'Output Compare Interrupt'
+    TIMSK |= _BV(4);
 
     // Use CTC (clear timer on compare mode)
     // this means that the timer will be reset
@@ -21,113 +128,10 @@ int main() {
     // trigger the TIMER0_COMAP interrupt.
     // Since we choose 0C0A to be 147,
     // this time will be just less than 20 ms.
-    // It is slightly less on purpose:
-    // we need te remaining time to actually send the pulses.
     TCCR0A = 0b00000001;
     TCCR0B = 0b00000101;
-    OC0A = 147;
+    OCR0A = 147;
+
+    for(;;);
 }
 
-// Dynamic delay.
-// Since the avr libc _delay_ms() and _delay_us() functions
-// simply insert a number of irrelevant instructions to delay
-// the execution of the program, the argument to these functions
-// need to be a compile time constant. 
-// This function divides the needed delay in smaller blocks and delays
-// the program repeatedly by these blocks.
-// Because the checks and the loops take some time, this delay function
-// will not be very precise.
-void delay(uint16_t microseconds) {
-
-    // I love optimizing!
-    // This is an array containing addresses.
-    // These address correspond to the labels below.
-    // Notice that the numbers are powers of two,
-    // this is because they correspond to the individual bits
-    // of 'microseconds'.
-    const void *jump_table[14] = {
-        &&wait32768,
-        &&wait16384,
-        &&wait8192,
-        &&wait4096,
-        &&wait2048,
-        &&wait1024,
-        &&wait512,
-        &&wait256,
-        &&wait128,
-        &&wait64,
-        &&wait32,
-        &&wait16,
-        &&wait8,
-        &&wait4
-    };
-        
-
-    // 3 is used instead of 0, since the overhead of the function
-    // is likely greater than 3 microseconds. So trying to delay the last
-    // three microseconds would just make this function more inaccurate.
-    // Notice that the value 3 corresponds to binary number 11. So by skipping
-    // the last three microseconds we also skip the last two bits, hence the jump_table
-    // contains 14 addresses while 'microseconds' is a 16 bit number.
-check:
-    if(microseconds <= 3) return;
-    // Count the number of leading zeros.
-    // For example, the 8 bit value 00010010 has three leading zeros.
-    // Notice that the number of leading zeros corresponds to the index
-    // of the first 1 bit (an index starts at zero).
-    int index = __bultin_clz(microseconds);
-    
-    // Credit goes to http://stackoverflow.com/a/6011206/1883402
-    // for the following line.
-    microseconds &= ~(0x800 >> index);
-    goto jump_table[index];
-
-wait32768:
-    _delay_us(32768);
-    goto check;
-wait16384:
-    _delay_us(16384);
-    goto check;
-wait8192:
-    _delay_us(8192);
-    goto check;
-wait4096:
-    _delay_us(4096);
-    goto check;
-wait2048:
-    _delay_us(2048);
-    goto check;
-wait1024:
-    _delay_us(1024);
-    goto check;
-wait512:
-    _delay_us(512);
-    goto check;
-wait256:
-    _delay_us(256);
-    goto check;
-wait128:
-    _delay_us(128);
-    goto check;
-wait64:
-    _delay_us(64);
-    goto check;
-wait32:
-    _delay_us(32);
-    goto check;
-wait16:
-    _delay_us(16);
-    goto check;
-wait8:
-    _delay_us(8);
-    goto check;
-wait4:
-    _delay_us(4);
-    goto check;
-}
-
-ISR(TIMER0_COMPA) {
-    // This interrupt will be triggered slightly more often than
-    // every 20 ms.
-    
-}
