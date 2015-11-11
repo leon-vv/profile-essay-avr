@@ -7,6 +7,8 @@
 #define BAUD 9600
 #include <util/setbaud.h>
 
+#define OUTPUT_PIN 10
+
 void
 usart_init()
 {
@@ -28,12 +30,14 @@ usart_init()
     UCSR0C = _BV(USBS0) | _BV(UCSZ01) | _BV(UCSZ00);
 }
 
+/*
 void
 usart_putchar(unsigned char c)
 {
     loop_until_bit_is_set(UCSR0A, UDRE0);
     UDR0 = c;
 }
+*/
 
 unsigned char
 usart_getchar()
@@ -42,6 +46,7 @@ usart_getchar()
     return UDR0;
 }
 
+/*
 void
 usart_write_string(char *string)
 {
@@ -106,22 +111,45 @@ pin_set_state(int pin, enum pin_state state)
     PORTD |= (1 & (int)state) << pin;
     usart_write_state();
 }
+*/
 
 int main() {
     usart_init();
 
-    DDRD = 0;
-    PORTD = 0;
+    // Run the interrupt approximately every 5ms.
+    setup_timer_interrupt(78);
+    for(;;);
+}
 
-    while(1) {
-        char input = usart_getchar();
-        int pin = input - (int)'0';
+volatile uint8_t counter = 48;
 
-        if(pin >= 0 && pin < 8) {
-            pin_set_mode(pin, OUTPUT);
-            pin_set_state(pin, HIGH);
+volatile uint8_t buffer[6] = {0b01010011};
+
+ISR(TIM0_COMPA_vect) {
+
+    if(counter >= 48) {
+        // Update the data
+        uint8_t checksum[2];
+
+        for(int i = 4; i > 1; i--) {
+            buffer[i] = usart_getchar();
         }
-    }
 
-    return 0;
+        // Increment buffer by one to skip
+        // the constant byte.
+        calculate_checksum(buffer + 1, checksum);
+
+        buffer[1] = checksum[0];
+        buffer[0] = checksum[1];
+
+        counter = 0;
+    }
+    
+    uint8_t byte_index = counter / 8;
+    uint8_t bit_index = 7 - (counter % 8);
+    
+    // Set the pin to the correct state.
+    PORTB |= ((buffer[byte_index] >> bit_index) && 1) << OUTPUT_PIN;
+    
+    counter += 1;
 }
