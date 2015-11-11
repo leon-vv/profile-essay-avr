@@ -1,7 +1,6 @@
 
 default: upload
-	sh ./serial.sh /dev/ttyUSB0 9600
-	
+
 main: main.c
 	mkdir -p build
 	avr-gcc -Wall -Os -DF_CPU=16000000 -mmcu=atmega328p $^ -o build/$@
