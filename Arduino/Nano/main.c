@@ -1,4 +1,6 @@
 #include <avr/io.h>
+#include <avr/interrupt.h>
+#include <avr/sleep.h>
 #include <stdio.h>
 #include <util/delay.h>
 
@@ -7,13 +9,13 @@
 #define BAUD 9600
 #include <util/setbaud.h>
 
-#define OUTPUT_PIN 10
+#include "../Shared/fletcher.c"
 
 void
 usart_init()
 {
-    // See ATMega328P datasheet (chapter 19: Usart)
-    // Set BAUD rate
+    // See ATMega328P datasheet (chapter 20: Usart)
+    // Set BAUD rate.
     UBRR0H = UBRRH_VALUE;
     UBRR0L = UBRRL_VALUE;
 
@@ -30,14 +32,12 @@ usart_init()
     UCSR0C = _BV(USBS0) | _BV(UCSZ01) | _BV(UCSZ00);
 }
 
-/*
 void
 usart_putchar(unsigned char c)
 {
     loop_until_bit_is_set(UCSR0A, UDRE0);
     UDR0 = c;
 }
-*/
 
 unsigned char
 usart_getchar()
@@ -113,19 +113,48 @@ pin_set_state(int pin, enum pin_state state)
 }
 */
 
+void
+led_on()
+{
+    PORTB |= _BV(PB5);
+}
+
+void
+led_off()
+{
+    PORTB &= ~_BV(PB5);
+}
+
 int main() {
+    // Enable transmitter output pin.
+    DDRD |= _BV(DDD7);
+    // Enable led output pin.
+    DDRB |= _BV(DDB5);
+
     usart_init();
 
-    // Run the interrupt approximately every 5ms.
-    setup_timer_interrupt(78);
-    for(;;);
+    // Enable interrupts.
+    sei();
+
+    // Enable 'Timer/Counter0 Ouput Compare Match A Interrupt'
+    TIMSK0 |= _BV(OCIE0A);
+
+    // Run the 'TIM0_COMPA_vect' interrupt approximately every 5ms.
+    TCCR0A = 0b00000010;
+    TCCR0B = 0b00000101;
+    OCR0A = 78;
+
+    sleep_enable();
+    for(;;) {
+        sleep_cpu();
+    }
 }
 
 volatile uint8_t counter = 48;
 
 volatile uint8_t buffer[6] = {0b01010011};
 
-ISR(TIM0_COMPA_vect) {
+ISR(TIMER0_COMPA_vect) {
 
     if(counter >= 48) {
         // Update the data
@@ -135,9 +164,13 @@ ISR(TIM0_COMPA_vect) {
             buffer[i] = usart_getchar();
         }
 
+        usart_putchar(buffer[3]);
+        if(buffer[3] > 125) led_on();
+        else led_off();
+
         // Increment buffer by one to skip
         // the constant byte.
-        calculate_checksum(buffer + 1, checksum);
+        compute_checksum(buffer + 1, checksum);
 
         buffer[1] = checksum[0];
         buffer[0] = checksum[1];
@@ -149,7 +182,7 @@ ISR(TIM0_COMPA_vect) {
     uint8_t bit_index = 7 - (counter % 8);
     
     // Set the pin to the correct state.
-    PORTB |= ((buffer[byte_index] >> bit_index) && 1) << OUTPUT_PIN;
+    PORTD |= ((buffer[byte_index] >> bit_index) && 1) << PD7;
     
     counter += 1;
 }
