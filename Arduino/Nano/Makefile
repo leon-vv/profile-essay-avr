@@ -3,7 +3,7 @@ default: upload
 
 main: main.c
 	mkdir -p build
-	avr-gcc -Wall -Os -DF_CPU=16000000 -mmcu=atmega328p $^ -o build/$@
+	avr-gcc -Wall -Og -DF_CPU=16000000 -mmcu=atmega328p $^ -o build/$@
 
 upload: main
 	avr-objcopy -O ihex -R .eeprom build/$^ build/$^.hex

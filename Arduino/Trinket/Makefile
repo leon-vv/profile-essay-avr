@@ -1,11 +1,15 @@
 
 default: upload
 	
-main: main.c
-	avr-gcc -Wall -O2 -DF_CPU=8000000 -mmcu=attiny85 $^ -o build/$@
+main.o: main.c
+	avr-gcc -Wall -Og -DF_CPU=16000000 -mmcu=attiny85 $^ -o build/$@
+
+simulate: main.o
+	~/Development/C/simavr/simavr/run_avr -mcu attiny85 -f 16000000 -t ./build/main.o
+	gtkwave gtkwave_trace.vcd
 
 main-asm: main.c
-	avr-gcc -Wall -Og -S -DF_CPU=8000000 -mmcu=attiny85 $^ -o build/$@.s
+	avr-gcc -Wall -Og -S -DF_CPU=16000000 -mmcu=attiny85 $^ -o build/$@.s
 
 upload: main
 	avr-objcopy -O ihex -R .eeprom build/$^ build/$^.hex

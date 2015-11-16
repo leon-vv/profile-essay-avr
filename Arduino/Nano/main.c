@@ -11,6 +11,7 @@
 
 #include "../Shared/fletcher.c"
 
+#include "/home/leonvv/Development/C/simavr/simavr/sim/avr_mcu_
 void
 usart_init()
 {
@@ -165,11 +166,8 @@ ISR(TIMER0_COMPA_vect) {
         }
 
         usart_putchar(buffer[3]);
-        if(buffer[3] > 125) led_on();
-        else led_off();
-
-        // Increment buffer by one to skip
-        // the constant byte.
+        // Increment buffer by the size of a byte to
+        // skip the constant byte.
         compute_checksum(buffer + 1, checksum);
 
         buffer[1] = checksum[0];
@@ -182,7 +180,16 @@ ISR(TIMER0_COMPA_vect) {
     uint8_t bit_index = 7 - (counter % 8);
     
     // Set the pin to the correct state.
-    PORTD |= ((buffer[byte_index] >> bit_index) && 1) << PD7;
+    //PORTD |= ((buffer[byte_index] >> bit_index) && 1) << PD7;
     
+    if(buffer[3] > 125) {
+        PORTD |= _BV(PD7);
+        led_on();
+    }
+    else {
+        PORTD &= ~_BV(PD7);
+        led_off();
+    }
+
     counter += 1;
 }
