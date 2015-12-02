@@ -1,6 +1,7 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
+#include <avr/power.h>
 #include <util/delay.h>
 #include <util/delay_basic.h>
 
@@ -8,15 +9,6 @@
 #include <stdbool.h>
 
 #include "../Shared/fletcher.c"
-
-
-#include "/home/leonvv/Development/C/simavr/simavr/sim/avr/avr_mcu_section.h"
-AVR_MCU(F_CPU, "attiny85");
-
-const struct avr_mmcu_vcd_trace_t _mytrace[]  _MMCU_ = {
-    { AVR_MCU_VCD_SYMBOL("PORTB"), .what = (void*)&PORTB, },
-};
-
 
 #define SERVO_SHORT_PULSE 530
 #define SERVO_LONG_PULSE 2400
@@ -52,6 +44,7 @@ volatile uint8_t esc = 0;
 // Buffer will hold the bits as they are read in
 // from the receiver.
 volatile uint64_t buffer = 0;
+
 // As a security measure, if no valid data packet
 // (correct constant byte and a correct checksum)
 // is read, after 3 seconds the motor is turned off
@@ -67,67 +60,50 @@ select_byte(uint64_t buffer, uint8_t index)
 }
 
 ISR(ADC_vect) {
-    bool bit = ADC > 750;
 
-    //if(bit) PORTB |= _BV(PB1);
-    //else PORTB &= _BV(PB1);
+    bool bit = ADC > 500;
+
 
     // The least significant bit is set corresponding
     // to whether the receiver is reading a signal.
     buffer <<= 1;
     buffer |= bit;
 
+    PORTB &= ~_BV(PB1);
+
     // Check if the constant byte is present.
-    if(select_byte(buffer, 5) == 0b01010011) {
-        // Error detection: the checksums should match.
-        uint8_t checksum[2];
-        uint8_t control_values[3] = {
-            select_byte(buffer, 4),
-            select_byte(buffer, 3),
-            select_byte(buffer, 2)
-        };
+    if(select_byte(buffer, 5) != 0b01010011) return;
 
-        compute_checksum(control_values, checksum);
 
-        if(checksum[0] == select_byte(buffer, 1)
-            && checksum[1] == select_byte(buffer, 0)) {
-            // Checksums match!
-            esc = control_values[0];
-            servo1 = control_values[1];
-            servo2 = control_values[2];
+    // Error detection: the checksums should match.
+    uint8_t checksum[2];
+    uint8_t control_values[3] = {
+        select_byte(buffer, 4),
+        select_byte(buffer, 3),
+        select_byte(buffer, 2)
+    };
 
-            consequent_fails = 0;
-        }
-        else if(consequent_fails >= 600) {
-            esc = 0;
-            servo1 = 125;
-            servo2 = 125;
-        }
-        else consequent_fails += 1;
+    compute_checksum(control_values, checksum);
 
+    if(checksum[0] == select_byte(buffer, 1)
+        && checksum[1] == select_byte(buffer, 0)) {
+        // Checksums match!
+
+        PORTB |= _BV(PB1);
+
+        esc = control_values[0];
+        servo1 = control_values[1];
+        servo2 = control_values[2];
+
+        consequent_fails = 0;
+        buffer = 0;
     }
-}
-
-
-void inline
-pulse_for(unsigned pulse_duration_us, int duration_ms, uint8_t pin)
-{
-    while(duration_ms > 0) {
-        delay_milliseconds(18);
-        duration_ms -= 18;
-
-        PORTB |= _BV(pin);
-        delay_microseconds(pulse_duration_us);
-        PORTB &= ~_BV(pin);
+    else if(consequent_fails >= 600) {
+        esc = 0;
+        servo1 = 125;
+        servo2 = 125;
     }
-}
-
-void
-arm_esc() {
-    // The ESC will only turn the motor on
-    // if it receives short pulses at the start.
-    // I think this is a security measure.
-    pulse_for(ESC_SHORT_PULSE, 4000, ESC_PIN);
+    else consequent_fails += 1;
 }
 
 struct pulse {
@@ -152,13 +128,17 @@ sort_pulses(struct pulse pulses[3]) {
     }
 }
 
+EMPTY_INTERRUPT(TIMER0_COMPA_vect);
+
 uint16_t inline
 map(uint16_t high, uint16_t low, uint8_t throttle)
 {
     return low + (high * (throttle / 255.0));
 }
 
+
 ISR(TIMER1_COMPA_vect) {
+    return;
     // This interrupt will be triggered slightly more often than
     // every 20 ms. During this interrupt we send a control pulse
     // to the servo's and the ESC (which controls the motor).
@@ -196,11 +176,15 @@ ISR(TIMER1_COMPA_vect) {
     }
 }
 
-
 int main() {
+    _delay_ms(2000);
+
+    // Use 16MHz cpu clock.
+    clock_prescale_set(clock_div_1);
 
     // Set the pins as output.
     DDRB |= _BV(SERVO1_PIN) | _BV(SERVO2_PIN) | _BV(ESC_PIN) | _BV(PB1);
+
     // The pin connected to the receiver is
     // configured as input by default.
 
@@ -208,16 +192,15 @@ int main() {
     // Timer 0 is used to trigger the analog to digital
     // conversions. This analog signal is received on pin PB4,
     // which is connected to the receiver.
-    OCR0A |= 39;
     TCCR0A |= _BV(WGM01);
     TCCR0B |= _BV(CS02) | _BV(CS00);
+    OCR0A = 78;
+
     // The analog to digital conversion will be triggered
     // when timer 0 is equal to OCR0A. When this analog to digital
     // conversion finishes, the 'ADC Conversion Complete' interrupt
-    // will be fired. Note that this value is precisely half of the
-    // corresponding value on the Arduino Nano that is connected to the
-    // laptop. This is because the CPU frequency of the Arduino Trinket
-    // is half of the CPU frequency of the Arduino Nano.
+    // will be fired.
+
 
     // Setup timer 1.
     // Timer 1 is used to trigger an interrupt slightly more often than every 20 ms.
@@ -227,15 +210,9 @@ int main() {
     // Select a prescaler of 2048.
     TCCR1 |= _BV(CTC1) | _BV(CS13) | _BV(CS12);
     OCR1A = OCR1C = 147;
+
+
     // Configure the ADC (Analog to Digital Converter).
-    
-    // Enable interrupts.
-    sei();
-
-    // More specifically, enable 'Output Compare Interrupt'
-    // for both timers.
-    TIMSK |= _BV(6) | _BV(4);
-
     // Use 5 volts as reference voltage.
     // Read analog input voltage from pin PB4.
     ADMUX |= _BV(MUX1);
@@ -244,15 +221,18 @@ int main() {
     // Enable automatic conversion.
     // Enable ADC Conversion Complete Interrupt.
     // Select a prescaler of 128.
-    ADCSRA |= _BV(ADATE) | _BV(ADIE) | _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0);
+    ADCSRA |= _BV(ADEN) | _BV(ADATE) | _BV(ADIE) | _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0);
 
-    // A compare match of timer 0 with OCR0B
+    // A compare match of timer 0 with OCR0A
     // should lead to a conversion start.
-    OCR0B = 39;
-    ADCSRB |= _BV(ADTS2) | _BV(ADTS0);
+    ADCSRB |= _BV(ADTS1) | _BV(ADTS0);
 
-    delay_milliseconds(10);
-    cli();
-    sleep_cpu();
+    // More specifically, enable 'Output Compare Interrupt'.
+    TIMSK |= _BV(OCIE1A) | _BV(OCIE0A);
+ 
+    // Enable interrupts.
+    sei();
+
+    for(;;);
 }
 

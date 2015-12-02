@@ -34,6 +34,8 @@ function writeLoop(port) {
                 // Right stick y
                 buffer.writeUInt8(255 - data[9], 2);
                 
+                console.log(buffer);
+
                 setTimeout(function() {
                     writeLoop(port);
                 }, 236);
@@ -51,7 +53,7 @@ serialPort.on("open", function() {
     console.log("Connection opened");
 
     serialPort.on("data", function( data) {
-        console.log(data);
+        console.log("Received data: ", data.toString());
     });
     writeLoop(serialPort);
 });

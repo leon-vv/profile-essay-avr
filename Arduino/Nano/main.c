@@ -1,8 +1,9 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
-#include <stdio.h>
 #include <util/delay.h>
+#include <stdio.h>
+#include <stdbool.h>
 
 // Picked from the ATMega328P datasheet (chapter 19: USART0)
 #define F_CPU 16000000 // Clock speed
@@ -11,7 +12,6 @@
 
 #include "../Shared/fletcher.c"
 
-#include "/home/leonvv/Development/C/simavr/simavr/sim/avr_mcu_
 void
 usart_init()
 {
@@ -47,7 +47,6 @@ usart_getchar()
     return UDR0;
 }
 
-/*
 void
 usart_write_string(char *string)
 {
@@ -57,21 +56,11 @@ usart_write_string(char *string)
 void
 usart_write_number(unsigned number, unsigned size)
 {
-    if(size > 8) return;
+    if(size > 16) return;
 
     char buffer[64];
-    sprintf(buffer, "decimal: %d, heximal: %X, binary: ", number, number);
-    usart_write_string(buffer);
+    sprintf(buffer, "decimal: %d, heximal: %X ", number, number);
 
-    static const char zero_one[2] = {'0', '1'};
-
-    for(int i = size - 1; i >= 0; i--) {
-        buffer[i] = zero_one[number & 1];
-        number >>= 1;
-    }
-
-    buffer[size] = '\n';
-    buffer[size+1] = '\0';
     usart_write_string(buffer);
 }
 
@@ -82,37 +71,14 @@ usart_write_state()
     usart_write_number(DDRD, sizeof(PORTD)*8);
 }
 
-enum pin_mode {
-    INPUT,
-    OUTPUT
-};
-
-void
-pin_set_mode(int pin, enum pin_mode mode)
+uint8_t inline
+set_n_bit_equal_to(uint8_t value, uint8_t index, bool x)
 {
-    switch(mode) {
-        case INPUT:
-            DDRA &= ~_BV(pin);
-            PORTA |= _BV(pin);
-            break;
-        case OUTPUT:
-            DDRD |= _BV(pin);
-            break;
-    }
+    if((value & _BV(index)) && x == 0) return value & ~_BV(index);
+
+    return value | (x << index);
 }
 
-enum pin_state {
-    LOW = 0,
-    HIGH = 1
-};
-
-void
-pin_set_state(int pin, enum pin_state state)
-{
-    PORTD |= (1 & (int)state) << pin;
-    usart_write_state();
-}
-*/
 
 void
 led_on()
@@ -126,52 +92,38 @@ led_off()
     PORTB &= ~_BV(PB5);
 }
 
-int main() {
-    // Enable transmitter output pin.
-    DDRD |= _BV(DDD7);
-    // Enable led output pin.
-    DDRB |= _BV(DDB5);
-
-    usart_init();
-
-    // Enable interrupts.
-    sei();
-
-    // Enable 'Timer/Counter0 Ouput Compare Match A Interrupt'
-    TIMSK0 |= _BV(OCIE0A);
-
-    // Run the 'TIM0_COMPA_vect' interrupt approximately every 5ms.
-    TCCR0A = 0b00000010;
-    TCCR0B = 0b00000101;
-    OCR0A = 78;
-
-    sleep_enable();
-    for(;;) {
-        sleep_cpu();
-    }
-}
-
 volatile uint8_t counter = 48;
 
-volatile uint8_t buffer[6] = {0b01010011};
+volatile uint8_t buffer[6] = {0b01010011, 0, 0, 0, 0, 0};
+volatile uint8_t receiving[6] = {0, 0, 0, 0, 0, 0};
+
+volatile int i = 0;
 
 ISR(TIMER0_COMPA_vect) {
+
+    if(i > 400) {
+        PORTB ^= _BV(PB5);
+        i = 0;
+    }
+
+    i += 1;
 
     if(counter >= 48) {
         // Update the data
         uint8_t checksum[2];
 
-        for(int i = 4; i > 1; i--) {
+        for(int i = 1; i < 4; i++) {
             buffer[i] = usart_getchar();
         }
 
-        usart_putchar(buffer[3]);
         // Increment buffer by the size of a byte to
         // skip the constant byte.
         compute_checksum(buffer + 1, checksum);
 
-        buffer[1] = checksum[0];
-        buffer[0] = checksum[1];
+        buffer[4] = checksum[0];
+        buffer[5] = checksum[1];
+
+        //for(int i = 0; i < 6; i++) receiving[i] = 0;
 
         counter = 0;
     }
@@ -179,17 +131,46 @@ ISR(TIMER0_COMPA_vect) {
     uint8_t byte_index = counter / 8;
     uint8_t bit_index = 7 - (counter % 8);
     
-    // Set the pin to the correct state.
-    //PORTD |= ((buffer[byte_index] >> bit_index) && 1) << PD7;
+    //Set the pin to the correct state.
+    PORTD = set_n_bit_equal_to(PORTD, PD7, (buffer[byte_index] >> bit_index) & 1);
+
+    /*
+    _delay_us(100);
     
-    if(buffer[3] > 125) {
-        PORTD |= _BV(PD7);
-        led_on();
-    }
-    else {
-        PORTD &= ~_BV(PD7);
-        led_off();
-    }
+    ADCSRA |= _BV(ADSC); 
+    loop_until_bit_is_clear(ADCSRA, ADSC);
+
+    receiving[byte_index] = set_n_bit_equal_to(receiving[byte_index], bit_index, ADC > 500);
+    */
 
     counter += 1;
 }
+
+int main() {
+    _delay_ms(2000);
+
+    // Enable transmitter output pin.
+    DDRD |= _BV(DDD7);
+    // Enable led output pin.
+    DDRB |= _BV(DDB5);
+
+    usart_init();
+
+    // Run the 'TIM0_COMPA_vect' interrupt approximately every 5ms.
+    TCCR0A = 0b00000010;
+    TCCR0B = 0b00000101;
+    OCR0A = 78;
+
+    // Enable 'Timer/Counter0 Ouput Compare Match A Interrupt'
+    TIMSK0 |= _BV(OCIE0A);
+
+    // Enable interrupts.
+    sei();
+
+    // Configure ADC
+    ADMUX = _BV(REFS0) | _BV(MUX1) | _BV(MUX0);
+    ADCSRA = _BV(ADEN) | _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0);
+
+    for(;;);
+}
+
