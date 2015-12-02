@@ -7,10 +7,17 @@
 
 // Picked from the ATMega328P datasheet (chapter 19: USART0)
 #define F_CPU 16000000 // Clock speed
-#define BAUD 9600
+#define BAUD 19200
 #include <util/setbaud.h>
 
 #include "../Shared/fletcher.c"
+
+void
+usart_putchar(unsigned char c)
+{
+    loop_until_bit_is_set(UCSR0A, UDRE0);
+    UDR0 = c;
+}
 
 void
 usart_init()
@@ -31,13 +38,9 @@ usart_init()
 
     // Use 1 stop bit and 8-bit data frames
     UCSR0C = _BV(USBS0) | _BV(UCSZ01) | _BV(UCSZ00);
-}
 
-void
-usart_putchar(unsigned char c)
-{
-    loop_until_bit_is_set(UCSR0A, UDRE0);
-    UDR0 = c;
+	// Request data
+	usart_putchar('D');
 }
 
 unsigned char
@@ -97,24 +100,17 @@ volatile uint8_t counter = 48;
 volatile uint8_t buffer[6] = {0b01010011, 0, 0, 0, 0, 0};
 volatile uint8_t receiving[6] = {0, 0, 0, 0, 0, 0};
 
-volatile int i = 0;
-
 ISR(TIMER0_COMPA_vect) {
-
-    if(i > 400) {
-        PORTB ^= _BV(PB5);
-        i = 0;
-    }
-
-    i += 1;
 
     if(counter >= 48) {
         // Update the data
         uint8_t checksum[2];
-
         for(int i = 1; i < 4; i++) {
             buffer[i] = usart_getchar();
         }
+
+		// Request data
+		usart_putchar('D');
 
         // Increment buffer by the size of a byte to
         // skip the constant byte.
@@ -123,9 +119,10 @@ ISR(TIMER0_COMPA_vect) {
         buffer[4] = checksum[0];
         buffer[5] = checksum[1];
 
-        //for(int i = 0; i < 6; i++) receiving[i] = 0;
-
         counter = 0;
+
+        if(buffer[1] > 125) led_on();
+        else led_off();
     }
     
     uint8_t byte_index = counter / 8;
@@ -159,7 +156,7 @@ int main() {
     // Run the 'TIM0_COMPA_vect' interrupt approximately every 5ms.
     TCCR0A = 0b00000010;
     TCCR0B = 0b00000101;
-    OCR0A = 78;
+    OCR0A = 16;
 
     // Enable 'Timer/Counter0 Ouput Compare Match A Interrupt'
     TIMSK0 |= _BV(OCIE0A);
