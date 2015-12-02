@@ -2,6 +2,7 @@
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 #include <avr/power.h>
+#include <util/atomic.h>
 #include <util/delay.h>
 #include <util/delay_basic.h>
 
@@ -24,7 +25,11 @@
 void inline
 delay_microseconds(unsigned us)
 {
-    _delay_loop_2(2 * us);
+	// 4 cycles per iteration
+	// 4 / 16e6 seconds per iteration
+	// 4 / 16 microseconds per iteration
+	// 4 iterations per microsecond
+    _delay_loop_2(4 * us);
 }
 
 void inline
@@ -43,15 +48,14 @@ volatile uint8_t esc = 0;
 
 // Buffer will hold the bits as they are read in
 // from the receiver.
-volatile uint64_t buffer = 0;
-
-// As a security measure, if no valid data packet
-// (correct constant byte and a correct checksum)
-// is read, after 3 seconds the motor is turned off
-// and the shaft of the servos are placed in the middle.
-// Since every 5 ms the receiver is read, after
-// 3000 / 5 = 600 consequent fails the 3 seconds have passed.
-volatile uint16_t consequent_fails = 0;
+volatile uint64_t stream_buffer = 0;
+// Once the predefined constant byte is found
+// in 'stream_buffer'. The contents of 'stream_buffer'
+// will be written to 'state_buffer'. 'state_buffer'
+// is checked periodically by the 'main' function.
+// If it holds a valid data packet, the values of
+// 'servo1', 'servo2' and 'esc' will be updated.
+volatile uint64_t state_buffer = 0;
     
 uint8_t inline
 select_byte(uint64_t buffer, uint8_t index)
@@ -63,30 +67,36 @@ ISR(ADC_vect) {
 
     bool bit = ADC > 500;
 
-
     // The least significant bit is set corresponding
     // to whether the receiver is reading a signal.
-    buffer <<= 1;
-    buffer |= bit;
+    stream_buffer <<= 1;
+    stream_buffer |= bit;
 
     PORTB &= ~_BV(PB1);
 
     // Check if the constant byte is present.
-    if(select_byte(buffer, 5) != 0b01010011) return;
+    if(select_byte(stream_buffer, 5) != 0b01010011) {
+    	state_buffer = stream_buffer;
+    	stream_buffer = 0;
+    }
+}
 
-
+bool
+update_control_values(uint64_t data_packet)
+{
     // Error detection: the checksums should match.
     uint8_t checksum[2];
+
     uint8_t control_values[3] = {
-        select_byte(buffer, 4),
-        select_byte(buffer, 3),
-        select_byte(buffer, 2)
+        select_byte(data_packet, 4),
+        select_byte(data_packet, 3),
+        select_byte(data_packet, 2)
     };
 
     compute_checksum(control_values, checksum);
 
-    if(checksum[0] == select_byte(buffer, 1)
-        && checksum[1] == select_byte(buffer, 0)) {
+    if(checksum[0] == select_byte(data_packet, 1)
+        && checksum[1] == select_byte(data_packet, 0)) {
         // Checksums match!
 
         PORTB |= _BV(PB1);
@@ -95,15 +105,9 @@ ISR(ADC_vect) {
         servo1 = control_values[1];
         servo2 = control_values[2];
 
-        consequent_fails = 0;
-        buffer = 0;
+        return true;
     }
-    else if(consequent_fails >= 600) {
-        esc = 0;
-        servo1 = 125;
-        servo2 = 125;
-    }
-    else consequent_fails += 1;
+    else return false;
 }
 
 struct pulse {
@@ -117,7 +121,6 @@ sort_pulses(struct pulse pulses[3]) {
     // This function uses the 'bubble sort' algorithm.
     
     for(int i = 0; i < 2; i++) {
-        // Two iterations
         for(int j = 0; j < 2; j++) {
             if(pulses[j].delay > pulses[j + 1].delay) {
                 struct pulse tmp = pulses[j];
@@ -128,8 +131,6 @@ sort_pulses(struct pulse pulses[3]) {
     }
 }
 
-EMPTY_INTERRUPT(TIMER0_COMPA_vect);
-
 uint16_t inline
 map(uint16_t high, uint16_t low, uint8_t throttle)
 {
@@ -137,20 +138,21 @@ map(uint16_t high, uint16_t low, uint8_t throttle)
 }
 
 
-ISR(TIMER1_COMPA_vect) {
-    return;
-    // This interrupt will be triggered slightly more often than
-    // every 20 ms. During this interrupt we send a control pulse
-    // to the servo's and the ESC (which controls the motor).
+EMPTY_INTERRUPT(TIMER0_COMPA_vect);
+
+//ISR(TIMER1_COMPA_vect) {
+void send_pulses() {
+	// This function has the responsibility of sending a control pulse
+	// to the servo's and the ESC.
 
     // A control pulse takes between 'SERVO_SHORT_PULSE' microseconds (off)
     // and 'SERVO_LONG_PULSE' microseconds (on). Since our chip runs at
-    // 8 MHz we should wait between:
-    // SERVO_LONG_CYCLES = (SERVO_LONG_PULSE / 10^6) * 8 * 10^6 = 8 * SERVO_LONG_PULSE and
-    // SERVO_SHORT_CYCLES = (SERVO_SHORT_PULSE / 10^6) * 8 * 10^6 = 8 * SERVO_SHORT_PULSE cpu cycles.
+    // 16 MHz we should wait between:
+    // SERVO_LONG_CYCLES = (SERVO_LONG_PULSE / 10^6) * 16 * 10^6 = 16 * SERVO_LONG_PULSE and
+    // SERVO_SHORT_CYCLES = (SERVO_SHORT_PULSE / 10^6) * 16 * 10^6 = 16 * SERVO_SHORT_PULSE cpu cycles.
     
     // We first translate the control variables 'esc' and 'servo'
-    // whose values are between 0 adn 255 to the amount of microseconds to wait.
+    // whose values are between 0 and 255 to the amount of microseconds to wait.
 
     struct pulse pulses[3] = {
         { map(SERVO_LONG_PULSE, SERVO_SHORT_PULSE, servo1), SERVO1_PIN },
@@ -168,11 +170,13 @@ ISR(TIMER1_COMPA_vect) {
     for(int i = 0; i < 3; i++) {
         struct pulse p = pulses[i];
 
-        delay_microseconds(p.delay);
+		int to_delay = p.delay - delayed;
+
+        delay_microseconds(to_delay);
 
         PORTB &= ~_BV(p.pin);
 
-        delayed += p.delay;
+        delayed += to_delay;
     }
 }
 
@@ -194,7 +198,7 @@ int main() {
     // which is connected to the receiver.
     TCCR0A |= _BV(WGM01);
     TCCR0B |= _BV(CS02) | _BV(CS00);
-    OCR0A = 78;
+    OCR0A = 16;
 
     // The analog to digital conversion will be triggered
     // when timer 0 is equal to OCR0A. When this analog to digital
@@ -202,6 +206,7 @@ int main() {
     // will be fired.
 
 
+/*
     // Setup timer 1.
     // Timer 1 is used to trigger an interrupt slightly more often than every 20 ms.
     // When this interrupt fires the servos and the ESC will receive a control pulse.
@@ -210,6 +215,7 @@ int main() {
     // Select a prescaler of 2048.
     TCCR1 |= _BV(CTC1) | _BV(CS13) | _BV(CS12);
     OCR1A = OCR1C = 147;
+   */
 
 
     // Configure the ADC (Analog to Digital Converter).
@@ -228,11 +234,49 @@ int main() {
     ADCSRB |= _BV(ADTS1) | _BV(ADTS0);
 
     // More specifically, enable 'Output Compare Interrupt'.
-    TIMSK |= _BV(OCIE1A) | _BV(OCIE0A);
+    TIMSK |= _BV(OCIE0A);
  
     // Enable interrupts.
     sei();
 
-    for(;;);
+	int invalid_count = 0;
+
+	for(;;) {
+	
+		uint64_t local_buffer;
+		
+		// Since the size of 'state_buffer' is larger than 8 bits,
+		// it needs to be accessed atomically to ensure that it is not
+		// mutated by the ADC interrupt handler during the access.
+		ATOMIC_BLOCK(ATOMIC_FORCEON) {
+			local_buffer = state_buffer;
+		}
+
+		if(local_buffer != 0) {
+			bool valid = update_control_values(local_buffer);
+
+			if(valid) invalid_count = 0;
+
+			ATOMIC_BLOCK(ATOMIC_FORCEON) {
+				state_buffer = 0;		
+			}
+		}
+
+		// As a security measure, if the arduino does not receive
+		// a single valid data packet during three seconds the motor
+		// will be shut off and the servo's will be put in their neutral position
+		// (the shaft will be turned 90 degrees).
+		// 'invalid_count' is incremented every 19 ms or so, thus the arduino
+		// should take action when 'invalid_count' passes 3000 / 19 = 158.
+		if(invalid_count > 158) {
+			esc = 0;	
+			servo1 = 125;
+			servo2 = 125;
+		}
+		invalid_count += 1;
+
+		send_pulses();
+		_delay_ms(17);
+	}
 }
 
