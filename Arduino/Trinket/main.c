@@ -11,18 +11,18 @@
 
 #include "../Shared/fletcher.c"
 
-#define SERVO_SHORT_PULSE 530
-#define SERVO_LONG_PULSE 2400
+#define SERVO_SHORT_PULSE 1000
+#define SERVO_LONG_PULSE 2000
 #define SERVO1_PIN PB2
 #define SERVO2_PIN PB3
 
-#define ESC_SHORT_PULSE 650
-#define ESC_LONG_PULSE 1200
+#define ESC_SHORT_PULSE 500
+#define ESC_LONG_PULSE 1000
 #define ESC_PIN PB0
 
 #define RECEIVER_PIN PB3
 
-void inline
+int inline
 delay_microseconds(unsigned us)
 {
 	// 4 cycles per iteration
@@ -30,6 +30,7 @@ delay_microseconds(unsigned us)
 	// 4 / 16 microseconds per iteration
 	// 4 iterations per microsecond
     _delay_loop_2(4 * us);
+    return us;
 }
 
 void inline
@@ -72,6 +73,7 @@ ISR(ADC_vect) {
     stream_buffer <<= 1;
     stream_buffer |= bit;
 
+	// Turn the led off.
     PORTB &= ~_BV(PB1);
 
     // Check if the constant byte is present.
@@ -99,6 +101,7 @@ update_control_values(uint64_t data_packet)
         && checksum[1] == select_byte(data_packet, 0)) {
         // Checksums match!
 
+		// Turn the led on.
         PORTB |= _BV(PB1);
 
         esc = control_values[0];
@@ -107,29 +110,14 @@ update_control_values(uint64_t data_packet)
 
         return true;
     }
-    else return false;
+    
+    return false;
 }
 
 struct pulse {
     uint16_t delay;
     uint8_t pin;
 };
-
-void inline
-sort_pulses(struct pulse pulses[3]) {
-    // Sort the array by the amount of microseconds to delay (ascending).
-    // This function uses the 'bubble sort' algorithm.
-    
-    for(int i = 0; i < 2; i++) {
-        for(int j = 0; j < 2; j++) {
-            if(pulses[j].delay > pulses[j + 1].delay) {
-                struct pulse tmp = pulses[j];
-                pulses[j] = pulses[j + 1];
-                pulses[j + 1] = tmp;
-            }
-        }
-    }
-}
 
 uint16_t inline
 map(uint16_t high, uint16_t low, uint8_t throttle)
@@ -141,7 +129,8 @@ map(uint16_t high, uint16_t low, uint8_t throttle)
 EMPTY_INTERRUPT(TIMER0_COMPA_vect);
 
 //ISR(TIMER1_COMPA_vect) {
-void send_pulses() {
+int
+send_pulses() {
 	// This function has the responsibility of sending a control pulse
 	// to the servo's and the ESC.
 
@@ -160,24 +149,21 @@ void send_pulses() {
         { map(ESC_LONG_PULSE, ESC_SHORT_PULSE, esc), ESC_PIN }
     };
 
-    sort_pulses(pulses);
 
-    // Start sending the pulse.
-    PORTB |= _BV(SERVO1_PIN) | _BV(SERVO2_PIN) | _BV(ESC_PIN);
+	int delayed = 0;
+	for(int i = 0; i < 3; i++) {
+		struct current_pulse = pulses[i];
 
-    uint16_t delayed = 0;
+		// Start sending the pulse.
+		PORTB |= _BV(current_pulse.pin);
+		
+		delayed += delay_microseconds(current_pulse.delay);
 
-    for(int i = 0; i < 3; i++) {
-        struct pulse p = pulses[i];
+		// Stop sending the pulse.
+		PORTB &= ~_BV(current_pulse.pin);
+	}
 
-		int to_delay = p.delay - delayed;
-
-        delay_microseconds(to_delay);
-
-        PORTB &= ~_BV(p.pin);
-
-        delayed += to_delay;
-    }
+	return delayed;
 }
 
 int main() {
@@ -198,7 +184,7 @@ int main() {
     // which is connected to the receiver.
     TCCR0A |= _BV(WGM01);
     TCCR0B |= _BV(CS02) | _BV(CS00);
-    OCR0A = 16;
+    OCR0A = 16; // Run the analog to digital converter every millisecond.
 
     // The analog to digital conversion will be triggered
     // when timer 0 is equal to OCR0A. When this analog to digital
@@ -215,8 +201,7 @@ int main() {
     // Select a prescaler of 2048.
     TCCR1 |= _BV(CTC1) | _BV(CS13) | _BV(CS12);
     OCR1A = OCR1C = 147;
-   */
-
+*/
 
     // Configure the ADC (Analog to Digital Converter).
     // Use 5 volts as reference voltage.
@@ -233,10 +218,10 @@ int main() {
     // should lead to a conversion start.
     ADCSRB |= _BV(ADTS1) | _BV(ADTS0);
 
-    // More specifically, enable 'Output Compare Interrupt'.
+    // Enable 'Output Compare Interrupt'.
     TIMSK |= _BV(OCIE0A);
  
-    // Enable interrupts.
+    // Enable interrupts globally.
     sei();
 
 	int invalid_count = 0;
@@ -266,17 +251,18 @@ int main() {
 		// a single valid data packet during three seconds the motor
 		// will be shut off and the servo's will be put in their neutral position
 		// (the shaft will be turned 90 degrees).
-		// 'invalid_count' is incremented every 19 ms or so, thus the arduino
-		// should take action when 'invalid_count' passes 3000 / 19 = 158.
-		if(invalid_count > 158) {
+		// 'invalid_count' is incremented every 18 ms or so, thus the arduino
+		// should take action when 'invalid_count' passes 3000 / 18 = 157.
+		if(++invalid_count > 157) {
 			esc = 0;	
 			servo1 = 125;
 			servo2 = 125;
+			invalid_count = 0;
 		}
-		invalid_count += 1;
 
-		send_pulses();
-		_delay_ms(17);
+		int delayed = send_pulses();
+
+		delay_milliseconds(18 - delayed);
 	}
 }
 
