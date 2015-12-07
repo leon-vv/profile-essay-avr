@@ -20,23 +20,18 @@
 #define ESC_LONG_PULSE 1000
 #define ESC_PIN PB0
 
-#define RECEIVER_PIN PB3
-
 int inline
 delay_microseconds(unsigned us)
 {
-	// 4 cycles per iteration
-	// 4 / 16e6 seconds per iteration
-	// 4 / 16 microseconds per iteration
-	// 4 iterations per microsecond
+	// Since our chip runs at
+    // 16 MHz we can convert a number of microseconds to the number of cpu cycles
+    // as follows:
+    // (time / 10^6) * 16 * 10^6 = 16 * time.
+    // The '_delay_loop_2' function takes 4 cpu cycles per iteration.
+    // Thus we should delay for (16 * time) / 4 = 4 * times iterations.
+
     _delay_loop_2(4 * us);
     return us;
-}
-
-void inline
-delay_milliseconds(unsigned ms)
-{
-    delay_microseconds(ms * 1000);
 }
 
 // An 8-bit value representing the state of the servo.
@@ -45,11 +40,16 @@ delay_milliseconds(unsigned ms)
 // the shaft will be turned the other way around.
 volatile uint8_t servo1 = 0;
 volatile uint8_t servo2 = 0;
+// Similarly, if 'esc' is 0 the motor will be turned off.
+// If 'esc' is 255 the motor will be turning very fast.
 volatile uint8_t esc = 0;
+// The three 8-bit values above are called the "control values".
 
-// Buffer will hold the bits as they are read in
-// from the receiver.
+
+// Buffer will hold the bits while they are read
+// from the receiver every 2 milliseconds.
 volatile uint64_t stream_buffer = 0;
+
 // Once the predefined constant byte is found
 // in 'stream_buffer'. The contents of 'stream_buffer'
 // will be written to 'state_buffer'. 'state_buffer'
@@ -65,19 +65,26 @@ select_byte(uint64_t buffer, uint8_t index)
 }
 
 ISR(ADC_vect) {
-
+	// ADC holds the value of the analog-to-digital conversion.
+	// If this value is larger than 500 we will read the signal
+	// as 1, else as 0.
     bool bit = ADC > 500;
 
-    // The least significant bit is set corresponding
-    // to whether the receiver is reading a signal.
+	// All the bits are shifted to the left.
     stream_buffer <<= 1;
+    // Then the bit is written to the buffer.
     stream_buffer |= bit;
 
 	// Turn the led off.
     PORTB &= ~_BV(PB1);
 
     // Check if the constant byte is present.
-    if(select_byte(stream_buffer, 5) != 0b01010011) {
+    if(select_byte(stream_buffer, 5) == 0b01010011) {
+    	// The constant byte is present,
+    	// therefore the 'stream_buffer' might hold a
+    	// valid data packet. We write the value of 'stream_buffer'
+    	// to 'state_buffer' such that the 'main' function can inspect
+    	// the data and update the control values if necessary.
     	state_buffer = stream_buffer;
     	stream_buffer = 0;
     }
@@ -86,7 +93,7 @@ ISR(ADC_vect) {
 bool
 update_control_values(uint64_t data_packet)
 {
-    // Error detection: the checksums should match.
+	// First the checksums are calculated.
     uint8_t checksum[2];
 
     uint8_t control_values[3] = {
@@ -97,9 +104,12 @@ update_control_values(uint64_t data_packet)
 
     compute_checksum(control_values, checksum);
 
+	// Then the checksums are compared to the checksums
+	// in the data packet.
     if(checksum[0] == select_byte(data_packet, 1)
         && checksum[1] == select_byte(data_packet, 0)) {
-        // Checksums match!
+        // If the checksums match we turn the led on
+        // and update the control values.
 
 		// Turn the led on.
         PORTB |= _BV(PB1);
@@ -128,21 +138,17 @@ map(uint16_t high, uint16_t low, uint8_t throttle)
 
 EMPTY_INTERRUPT(TIMER0_COMPA_vect);
 
-//ISR(TIMER1_COMPA_vect) {
 int
 send_pulses() {
 	// This function has the responsibility of sending a control pulse
 	// to the servo's and the ESC.
 
     // A control pulse takes between 'SERVO_SHORT_PULSE' microseconds (off)
-    // and 'SERVO_LONG_PULSE' microseconds (on). Since our chip runs at
-    // 16 MHz we should wait between:
-    // SERVO_LONG_CYCLES = (SERVO_LONG_PULSE / 10^6) * 16 * 10^6 = 16 * SERVO_LONG_PULSE and
-    // SERVO_SHORT_CYCLES = (SERVO_SHORT_PULSE / 10^6) * 16 * 10^6 = 16 * SERVO_SHORT_PULSE cpu cycles.
+    // and 'SERVO_LONG_PULSE' microseconds (on).     // Therefore, the cpu should wait between
+    // 16 * SERVO_LONG_PULSE and 16 * SERVO_SHORT_PULSE cycles.
     
     // We first translate the control variables 'esc' and 'servo'
     // whose values are between 0 and 255 to the amount of microseconds to wait.
-
     struct pulse pulses[3] = {
         { map(SERVO_LONG_PULSE, SERVO_SHORT_PULSE, servo1), SERVO1_PIN },
         { map(SERVO_LONG_PULSE, SERVO_SHORT_PULSE, servo2), SERVO2_PIN },
@@ -151,8 +157,9 @@ send_pulses() {
 
 
 	int delayed = 0;
+
 	for(int i = 0; i < 3; i++) {
-		struct current_pulse = pulses[i];
+		struct pulse current_pulse = pulses[i];
 
 		// Start sending the pulse.
 		PORTB |= _BV(current_pulse.pin);
@@ -173,6 +180,7 @@ int main() {
     clock_prescale_set(clock_div_1);
 
     // Set the pins as output.
+    // The PB1 pin corresponds to the built-in led.
     DDRB |= _BV(SERVO1_PIN) | _BV(SERVO2_PIN) | _BV(ESC_PIN) | _BV(PB1);
 
     // The pin connected to the receiver is
@@ -184,24 +192,18 @@ int main() {
     // which is connected to the receiver.
     TCCR0A |= _BV(WGM01);
     TCCR0B |= _BV(CS02) | _BV(CS00);
-    OCR0A = 16; // Run the analog to digital converter every millisecond.
 
     // The analog to digital conversion will be triggered
-    // when timer 0 is equal to OCR0A. When this analog to digital
+    // when the timer register is equal to OCR0A. When this analog to digital
     // conversion finishes, the 'ADC Conversion Complete' interrupt
-    // will be fired.
-
-
-/*
-    // Setup timer 1.
-    // Timer 1 is used to trigger an interrupt slightly more often than every 20 ms.
-    // When this interrupt fires the servos and the ESC will receive a control pulse.
-    
-    // Select Clear Timer on Compare Match (CTC) mode. 
-    // Select a prescaler of 2048.
-    TCCR1 |= _BV(CTC1) | _BV(CS13) | _BV(CS12);
-    OCR1A = OCR1C = 147;
-*/
+    // will be fired (ADC_vect).
+    //
+    // The conversion will happen every 2 milliseconds.
+    // This value can be calculated as follows:
+    // the chip runs at a frequency of 16 MHz. By using a prescaler of
+    // 1024 the timer register will be increased 16e6 / 1024 = 15625 times.
+    // Thus it will be equal to OCR0A every (32 / 15626) * 1000 = 2.0479 milliseconds.
+    OCR0A = 32;
 
     // Configure the ADC (Analog to Digital Converter).
     // Use 5 volts as reference voltage.
@@ -226,13 +228,15 @@ int main() {
 
 	int invalid_count = 0;
 
+	// Loop indefinitely.
 	for(;;) {
-	
 		uint64_t local_buffer;
 		
 		// Since the size of 'state_buffer' is larger than 8 bits,
 		// it needs to be accessed atomically to ensure that it is not
 		// mutated by the ADC interrupt handler during the access.
+		// While the statements in the atomic block are run interrupts
+		// will be disabled.
 		ATOMIC_BLOCK(ATOMIC_FORCEON) {
 			local_buffer = state_buffer;
 		}
@@ -262,7 +266,7 @@ int main() {
 
 		int delayed = send_pulses();
 
-		delay_milliseconds(18 - delayed);
+		delay_microseconds(18000 - delayed);
 	}
 }
 
