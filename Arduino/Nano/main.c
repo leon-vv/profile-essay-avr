@@ -50,30 +50,6 @@ usart_getchar()
     return UDR0;
 }
 
-void
-usart_write_string(char *string)
-{
-    for(char *p = string; *p != '\0'; p++) usart_putchar(*p);
-}
-
-void
-usart_write_number(unsigned number, unsigned size)
-{
-    if(size > 16) return;
-
-    char buffer[64];
-    sprintf(buffer, "decimal: %d, heximal: %X ", number, number);
-
-    usart_write_string(buffer);
-}
-
-void
-usart_write_state()
-{
-    usart_write_number(PORTD, sizeof(PORTD)*8);
-    usart_write_number(DDRD, sizeof(PORTD)*8);
-}
-
 uint8_t inline
 set_n_bit_equal_to(uint8_t value, uint8_t index, bool x)
 {
@@ -83,27 +59,18 @@ set_n_bit_equal_to(uint8_t value, uint8_t index, bool x)
 }
 
 
-void
-led_on()
-{
-    PORTB |= _BV(PB5);
-}
-
-void
-led_off()
-{
-    PORTB &= ~_BV(PB5);
-}
-
 volatile uint8_t counter = 48;
 
 volatile uint8_t buffer[6] = {0b01010011, 0, 0, 0, 0, 0};
 volatile uint8_t receiving[6] = {0, 0, 0, 0, 0, 0};
 
+// Called every 2 ms.
 ISR(TIMER0_COMPA_vect) {
 
     if(counter >= 48) {
-        // Update the data
+    	// All the six bytes have been sent.
+        // Request new bytes from the laptop.
+        //
         uint8_t checksum[2];
         for(int i = 1; i < 4; i++) {
             buffer[i] = usart_getchar();
@@ -120,26 +87,15 @@ ISR(TIMER0_COMPA_vect) {
         buffer[5] = checksum[1];
 
         counter = 0;
-
-        if(buffer[1] > 125) led_on();
-        else led_off();
     }
     
     uint8_t byte_index = counter / 8;
     uint8_t bit_index = 7 - (counter % 8);
     
-    //Set the pin to the correct state.
+    // Set the pin to the correct state.
+    // This pin is connected to the transmitter.
     PORTD = set_n_bit_equal_to(PORTD, PD7, (buffer[byte_index] >> bit_index) & 1);
-
-    /*
-    _delay_us(100);
     
-    ADCSRA |= _BV(ADSC); 
-    loop_until_bit_is_clear(ADCSRA, ADSC);
-
-    receiving[byte_index] = set_n_bit_equal_to(receiving[byte_index], bit_index, ADC > 500);
-    */
-
     counter += 1;
 }
 
@@ -153,10 +109,10 @@ int main() {
 
     usart_init();
 
-    // Run the 'TIM0_COMPA_vect' interrupt approximately every 5ms.
+    // Run the 'TIM0_COMPA_vect' interrupt approximately every 2 ms.
     TCCR0A = 0b00000010;
     TCCR0B = 0b00000101;
-    OCR0A = 16;
+    OCR0A = 32;
 
     // Enable 'Timer/Counter0 Ouput Compare Match A Interrupt'
     TIMSK0 |= _BV(OCIE0A);

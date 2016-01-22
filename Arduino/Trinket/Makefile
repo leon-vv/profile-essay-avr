@@ -2,10 +2,10 @@
 default: main.o
 	
 main.o: main.c
-	avr-gcc -Wall -Og -DF_CPU=16000000 -mmcu=attiny85 -g $^ -o build/$@
+	avr-gcc -Wall -O2 -DF_CPU=16000000 -mmcu=attiny85 -g $^ -o build/$@
 
 main-asm: main.c
-	avr-gcc -Wall -Og -S -DF_CPU=16000000 -mmcu=attiny85 $^ -o build/$@.s
+	avr-gcc -Wall -O2 -S -DF_CPU=16000000 -mmcu=attiny85 $^ -o build/$@.s
 
 upload: main.o
 	avr-objcopy -O ihex -R .eeprom build/$^ build/$^.hex

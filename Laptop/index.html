@@ -1,0 +1,31 @@
+<DOCTYPE html!>
+<html>
+	<head>
+		<title>Drone Control Values</title>
+
+		<script src="/socket.io/socket.io.js"></script>
+		<script type="text/JavaScript">
+			var socket = io();
+
+			window.onload = function() {
+
+				var divs = {
+					"esc": document.getElementById("esc"),
+					"servo1": document.getElementById("servo1"),
+					"servo2": document.getElementById("servo2")
+				};
+
+				socket.on("control-data", function(data) {
+					for(var key in data) {
+						divs[key].innerHTML = data[key];
+					}
+				});
+			}
+		</script>
+	</head>
+	<body>
+		<div id="esc"></div>
+		<div id="servo1"></div>
+		<div id="servo2"></div>
+	</body>
+</html>
