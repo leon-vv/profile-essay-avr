@@ -7,7 +7,8 @@ var io = require("socket.io")(http);
 
 
 var devices = HID.devices();
-var controller = new HID.HID(devices[0].path);
+var c = devices[0];
+var controller = new HID.HID(c.vendorId, c.productId);
 
 var serialPort = new SerialPort("/dev/ttyUSB0", {
 	baudrate: 19200
@@ -19,12 +20,35 @@ serialPort.on("error", function(error) {
     console.log(error);
 });
 
+/*
+
+    setInterval(function() {
+	controller.read(function(error, data) {
+		if(error) console.log(error);
+
+		// Left stick y
+		buffer.writeUInt8(255 - data[7], 0);
+		// Right stick x
+		buffer.writeUInt8(data[8], 1);
+		// Right stick y
+		buffer.writeUInt8(255 - data[9], 2);
+
+		io.emit("control-data", {
+			esc: buffer.readUInt8(0),
+			servo1: buffer.readUInt8(1),
+			servo2: buffer.readUInt8(2)
+		});
+	});
+    }, 200);
+		
+*/
+
 // Called when the connection with the Arduino is opened
 serialPort.on("open", function() {
 
-    console.log("Connection with controller opened");
+    console.log("Connection with sender opened");
 
-	// Called when the Arduino sends some data.
+    // Called when the Arduino sends some data.
     serialPort.on("data", function(data) {
 
 		controller.read(function(error, data) {
@@ -51,12 +75,14 @@ serialPort.on("open", function() {
 
     });
 });
+*/
 
 // Setup a small HTTP server such that
 // we can keep track of the control bytes
-// with a browser.
+// within a browser.
 app.get("/", function(req, res) {
-	res.sendFile(__dirname + "/index.html");	
+    console.log(__dirname + "/index.html");
+    res.sendFile(__dirname + "/index.html");
 });
 
 io.on("connection", function(socket) {

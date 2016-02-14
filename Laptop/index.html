@@ -1,31 +1,167 @@
-<DOCTYPE html!>
+<!DOCTYPE html>
 <html>
 	<head>
+	    <style type="text/CSS">
+		html, body {
+		    margin:0px;
+
+		    width:100%;
+		    height:100%;
+		}
+		#left {
+		    display:inline-block;
+		    height:80%;
+		    width:20%;
+		}
+		#throttle {
+		    position: relative;
+
+		    width: 25%;
+		    height: 80%;
+
+		    margin:0px auto;
+		    margin-top:30px;
+
+		    background: linear-gradient(to top, green, red);
+		    border:1px solid #000;
+		}
+		#overlay {
+		    position:absolute;
+		    top:0px;
+		    left:0px;
+		    height:30%;
+		    width:100%;
+		    background-color:#FFF;
+		}
+		#right {
+		    display:inline-block;
+		    width:80%;
+		    height:80%;
+
+		    vertical-align:top;
+		}
+		canvas#stick {
+		    display:block;
+		    width: 81.25%;
+		    height:80%;
+		    margin:auto;
+		    margin-top:30px;
+		    border:1px solid #000;
+		}
+		canvas#signal {
+		    display:block;
+		    margin:auto;
+		    margin-bottom:20px;
+		    width:85%;
+		    height:15%;
+		    border:1px solid #000;
+		}
+
+	    </style>
 		<title>Drone Control Values</title>
 
 		<script src="/socket.io/socket.io.js"></script>
 		<script type="text/JavaScript">
 			var socket = io();
 
-			window.onload = function() {
-
-				var divs = {
-					"esc": document.getElementById("esc"),
-					"servo1": document.getElementById("servo1"),
-					"servo2": document.getElementById("servo2")
-				};
-
-				socket.on("control-data", function(data) {
-					for(var key in data) {
-						divs[key].innerHTML = data[key];
-					}
-				});
+			function drawLine(ctx, x1, y1, x2, y2) {
+			    ctx.beginPath();
+			    ctx.moveTo(x1, y1);
+			    ctx.lineTo(x2, y2);
+			    ctx.stroke();
+			    ctx.closePath();
 			}
+			
+			function drawStick(ctx, x, y, radius) {
+			    ctx.beginPath();
+			    ctx.arc(x, y, radius, 0, Math.PI*2);
+			    ctx.fillStyle = "grey";
+			    ctx.lineWidth = 2;
+			    ctx.stroke();
+			    ctx.fill();
+			}
+
+			window.onload = function() {
+				
+			    var elem = function(id) {
+				return document.getElementById(id);
+			    };
+
+			    var overlay = elem("overlay");		
+
+			    var stick = elem("stick");
+			    stick.width = stick.clientWidth;
+			    stick.height = stick.clientHeight;
+			    var centerX = stick.width / 2;
+			    var centerY = stick.height / 2;
+			    var radius = 35;
+			    var toMove = function(x) { return (x - 127) / 128 * (stick.height/2 - radius); };
+			    var stickCtx = stick.getContext("2d");
+		    
+			    var signal = elem("signal");
+			    signal.width = signal.clientWidth;
+			    signal.height = signal.clientHeight;
+			    var signalCtx = signal.getContext("2d");
+
+
+			    var pulseLength = 1000;
+
+			    socket.on("control-data", function(data) {
+			    	console.log(data);
+				overlay.style.height = (100 - Number(data.esc) * 100 / 255) + "%";
+
+				stickCtx.clearRect(0, 0, stick.width, stick.height);
+
+				var moveY = toMove(255 - data.servo2);
+				var moveX = toMove(data.servo1);
+
+				drawLine(stickCtx, centerX, centerY, centerX + moveX, centerY + moveY);
+				drawStick(stickCtx, centerX + moveX, centerY + moveY, radius);
+
+				pulseLength = 1000 + Number(data.esc)/255*1000;
+			    });
+
+			    var xCurrentPulse = 100;
+			    var pulseWidth = pulseLength / 6;
+			    var lowY = signal.height - 10;
+
+			    setInterval(function() {
+			    	if(xCurrentPulse + 50 > signal.width) {
+			    	    pulseWidth = pulseLength / 6;
+			    	    xCurrentPulse = 0;
+			    	}
+			    	else xCurrentPulse += 60;
+
+				signalCtx.clearRect(0, 0, signal.width, signal.height);
+
+				signalCtx.lineWidth = 2;
+			    	signalCtx.beginPath();
+			    	signalCtx.moveTo(0, lowY);
+			    	signalCtx.lineTo(xCurrentPulse, lowY);
+			    	signalCtx.lineTo(xCurrentPulse, 15);
+			    	var pulseEnd = xCurrentPulse + pulseWidth;
+			    	signalCtx.lineTo(pulseEnd, 15);
+			    	signalCtx.lineTo(pulseEnd, lowY);
+			    	signalCtx.lineTo(signal.width, lowY);
+			    	signalCtx.stroke();
+			    	signalCtx.closePath();
+			    }, 80);
+			    
+			};
 		</script>
 	</head>
 	<body>
-		<div id="esc"></div>
-		<div id="servo1"></div>
-		<div id="servo2"></div>
+		<div id="left">
+		    <div id="throttle">
+			<div id="overlay"></div> 
+		    </div>
+		</div><div id="right">
+		    <canvas width="80%" height="80%" id="stick"></canvas>
+		</div>
+
+		<canvas id="signal">
+
+		</canvas>
+
 	</body>
 </html>
